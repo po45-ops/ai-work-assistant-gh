@@ -1,0 +1,21 @@
+export const projectStatuses = ["planning", "active", "on_hold", "completed", "cancelled"] as const;
+export const projectPriorities = ["high", "medium", "low"] as const;
+export const riskLevels = ["green", "yellow", "orange", "red"] as const;
+export type ProjectStatus = (typeof projectStatuses)[number];
+export type ProjectPriority = (typeof projectPriorities)[number];
+export type RiskLevel = (typeof riskLevels)[number];
+export type Project = {
+  id: string; name: string; goal: string | null; description: string | null;
+  status: ProjectStatus; priority: ProjectPriority; risk_level: RiskLevel;
+  progress_percent: number; start_date: string | null; target_date: string | null;
+  completed_at: string | null; updated_at: string; created_at: string;
+};
+export type ProjectInput = Pick<Project, "name" | "goal" | "description" | "status" | "priority" | "risk_level" | "progress_percent" | "start_date" | "target_date">;
+export type Milestone = { id: string; project_id: string; name: string; description: string | null; status: string; priority: ProjectPriority; progress_percent: number; due_date: string | null; sequence_no: number; updated_at: string };
+export type LinkedTask = { id: string; title: string; status: string; priority: string; due_date: string | null };
+export type ProjectFilters = { search: string; status: ProjectStatus | "all"; page: number };
+export type ActionResult = { ok: boolean; message: string; id?: string };
+export const statusLabels: Record<ProjectStatus, string> = { planning: "วางแผน", active: "กำลังดำเนินการ", on_hold: "พักไว้", completed: "เสร็จแล้ว", cancelled: "ยกเลิก" };
+export const priorityLabels: Record<ProjectPriority, string> = { high: "สูง", medium: "ปานกลาง", low: "ต่ำ" };
+export const riskLabels: Record<RiskLevel, string> = { green: "ปกติ", yellow: "เฝ้าระวัง", orange: "เสี่ยง", red: "วิกฤต" };
+export const projectPageSize = 12;
