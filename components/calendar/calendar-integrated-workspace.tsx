@@ -13,7 +13,7 @@ function dateLabel(date: string, options: Intl.DateTimeFormatOptions) { return n
 function eventLink(event: CalendarEvent) {
   if (event.kind === "task") return "/protected/tasks?search=" + encodeURIComponent(event.title);
   if (event.kind === "google") return "/protected/calendar";
-  return "/protected/projects/" + event.projectId;
+  return "/protected/projects/view?id=" + encodeURIComponent(event.projectId ?? "");
 }
 
 export function CalendarIntegratedWorkspace({ month, day, today, events, error, googleError, googleConnected, truncated }: {

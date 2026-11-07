@@ -1,17 +1,15 @@
 "use client";
 
 import { LogOut } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
+import { clearGoogleSession } from "@/lib/gas/client";
 import { useRouter } from "next/navigation";
 
 export function LogoutButton() {
   const router = useRouter();
 
-  const logout = async () => {
-    const supabase = createClient();
-    await supabase.auth.signOut();
+  const logout = () => {
+    clearGoogleSession();
     router.push("/auth/login");
-    router.refresh();
   };
 
   return (

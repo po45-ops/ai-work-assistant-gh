@@ -1,4 +1,6 @@
-import { Suspense } from "react";
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   BarChart3,
@@ -7,22 +9,67 @@ import {
   FolderKanban,
   ListTodo,
 } from "lucide-react";
-import { loadReport } from "@/lib/reports/data";
+import { callGasApi } from "@/lib/gas/client";
+
+type ReportData = {
+  error: string | null;
+  today: string;
+  open: number;
+  overdue: number;
+  projectsActive: number;
+  projectsCompleted: number;
+  completed: number;
+  daily: { date: string; count: number }[];
+};
+
 export default function ReportsPage() {
-  return (
-    <Suspense
-      fallback={
-        <div role="status" className="px-4 py-8 text-base text-[#705c4d]">
-          กำลังคำนวณรายงาน…
-        </div>
+  const [report, setReport] = useState<ReportData | null>(null);
+
+  const fetchReport = useCallback(async () => {
+    try {
+      const res = await callGasApi<ReportData>("reports.get");
+      if (res.ok && res.data) {
+        setReport(res.data);
+      } else {
+        setReport({
+          error: res.message || "โหลดรายงานไม่สำเร็จ",
+          today: new Date().toISOString().slice(0, 10),
+          open: 0,
+          overdue: 0,
+          projectsActive: 0,
+          projectsCompleted: 0,
+          completed: 0,
+          daily: [],
+        });
       }
-    >
-      <Content />
-    </Suspense>
-  );
-}
-async function Content() {
-  const report = await loadReport();
+    } catch {
+      setReport({
+        error: "เชื่อมต่อ Google Apps Script ไม่สำเร็จ",
+        today: new Date().toISOString().slice(0, 10),
+        open: 0,
+        overdue: 0,
+        projectsActive: 0,
+        projectsCompleted: 0,
+        completed: 0,
+        daily: [],
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchReport();
+    window.addEventListener("po-data-updated", fetchReport);
+    return () => window.removeEventListener("po-data-updated", fetchReport);
+  }, [fetchReport]);
+
+  if (!report) {
+    return (
+      <div role="status" className="px-4 py-8 text-base text-[#705c4d]">
+        กำลังคำนวณรายงาน…
+      </div>
+    );
+  }
+
   const max = Math.max(1, ...report.daily.map((item) => item.count));
   return (
     <div className="mx-auto w-full max-w-[1320px] px-4 py-5 sm:px-6 lg:px-8 xl:py-8">
@@ -133,15 +180,12 @@ async function Content() {
               </Link>
             </section>
           </div>
-          <p className="mt-5 text-sm leading-6 text-[#705c4d]">
-            รายงานนี้นับจากสถานะและวันที่ทำเสร็จจริงในระบบ
-            ยังไม่มีการติดตามเวลาโฟกัสหรือการวิเคราะห์ด้วย AI
-          </p>
         </>
       )}
     </div>
   );
 }
+
 function Stat({
   icon,
   label,

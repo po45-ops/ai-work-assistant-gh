@@ -61,7 +61,7 @@ export function InboxItemActions({ id, initialDraft, attachments, committed, ini
   if (commitResult) return <div className="mt-4 flex flex-wrap items-center gap-2 rounded-xl bg-[#e5eee6] p-3 text-sm text-[#385640]">
     <Check className="h-4 w-4 shrink-0" />
     <span>{commitResult.kind === "event" ? "เพิ่มใน Google Calendar แล้ว" : commitResult.kind === "project" ? "สร้างโปรเจกต์แล้ว" : commitResult.kind === "note" ? "เก็บเป็นสรุปแล้ว" : "สร้างงานแล้ว"}</span>
-    {commitResult.project_id && <Link className="font-semibold underline underline-offset-2" href={`/protected/projects/${commitResult.project_id}`}>เปิดโปรเจกต์</Link>}
+    {commitResult.project_id && <Link className="font-semibold underline underline-offset-2" href={`/protected/projects/view?id=${encodeURIComponent(commitResult.project_id)}`}>เปิดโปรเจกต์</Link>}
     {commitResult.task_ids?.length ? <Link className="font-semibold underline underline-offset-2" href="/protected/tasks">เปิดงาน ({commitResult.task_ids.length})</Link> : null}
     {commitResult.kind === "event" && <Link className="font-semibold underline underline-offset-2" href="/protected/calendar">เปิดปฏิทิน</Link>}
     {notice && <p role={notice.error ? "alert" : "status"} className={`mt-3 rounded-xl p-3 text-sm ${notice.error ? "bg-[#fde5dd] text-[#933f30]" : "bg-[#e5eee6] text-[#385640]"}`}>{notice.message}</p>}

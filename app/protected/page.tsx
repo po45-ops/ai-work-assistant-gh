@@ -1,4 +1,6 @@
-import { Suspense } from "react";
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import {
@@ -11,27 +13,87 @@ import {
   MessageSquareText,
   Target,
 } from "lucide-react";
-import { loadDashboard } from "@/lib/dashboard/data";
-export default function DashboardPage() {
-  return (
-    <Suspense
-      fallback={
-        <div role="status" className="px-4 py-8 text-base text-[#705c4d]">
-          กำลังโหลดภาพรวมของคุณ…
-        </div>
-      }
-    >
-      <Content />
-    </Suspense>
-  );
+import { callGasApi } from "@/lib/gas/client";
+
+type TaskSummary = { id: string; title: string; priority: string; due_date: string | null };
+type ProjectSummary = { id: string; name: string; progress_percent: number; status: string };
+type DashboardData = {
+  today: string;
+  todayTasks: number;
+  important: number;
+  overdue: number;
+  activeProjects: number;
+  pendingInbox: number;
+  tasks: TaskSummary[];
+  projects: ProjectSummary[];
+  error: string | null;
+};
+
+function bangkokToday() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Bangkok",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 }
-async function Content() {
-  const data = await loadDashboard();
+
+export default function DashboardPage() {
+  const [data, setData] = useState<DashboardData | null>(null);
+
+  const fetchDashboard = useCallback(async () => {
+    try {
+      const res = await callGasApi<DashboardData>("dashboard.get");
+      if (res.ok && res.data) {
+        setData(res.data);
+      } else {
+        setData({
+          today: bangkokToday(),
+          todayTasks: 0,
+          important: 0,
+          overdue: 0,
+          activeProjects: 0,
+          pendingInbox: 0,
+          tasks: [],
+          projects: [],
+          error: res.message || "โหลดภาพรวมไม่สำเร็จ",
+        });
+      }
+    } catch {
+      setData({
+        today: bangkokToday(),
+        todayTasks: 0,
+        important: 0,
+        overdue: 0,
+        activeProjects: 0,
+        pendingInbox: 0,
+        tasks: [],
+        projects: [],
+        error: "เชื่อมต่อ Google Apps Script ไม่สำเร็จ กรุณาตรวจสอบ URL การเชื่อมต่อ",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchDashboard();
+    window.addEventListener("po-data-updated", fetchDashboard);
+    return () => window.removeEventListener("po-data-updated", fetchDashboard);
+  }, [fetchDashboard]);
+
+  if (!data) {
+    return (
+      <div role="status" className="px-4 py-8 text-base text-[#705c4d]">
+        กำลังโหลดภาพรวมของคุณ…
+      </div>
+    );
+  }
+
   const todayLabel = new Intl.DateTimeFormat("th-TH", {
     day: "numeric",
     month: "long",
     year: "numeric",
   }).format(new Date(`${data.today}T12:00:00Z`));
+
   return (
     <div className="mx-auto w-full max-w-[1320px] px-4 py-5 sm:px-6 lg:px-8 xl:py-8">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
@@ -179,7 +241,7 @@ async function Content() {
                     {data.projects.map((project) => (
                       <Link
                         key={project.id}
-                        href={`/protected/projects/${project.id}`}
+                        href={`/protected/projects/view?id=${encodeURIComponent(project.id)}`}
                         className="rounded-xl bg-[#f7f1e9] p-4"
                       >
                         <p className="break-words text-base font-semibold">
@@ -239,6 +301,7 @@ async function Content() {
     </div>
   );
 }
+
 function Metric({
   icon,
   value,
@@ -256,6 +319,7 @@ function Metric({
     </div>
   );
 }
+
 function QuickLink({
   href,
   icon,

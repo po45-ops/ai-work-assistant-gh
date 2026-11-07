@@ -1,5 +1,8 @@
+"use client";
+
 import Link from "next/link";
-import { Suspense } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { Sparkles, UserRound, Search } from "lucide-react";
 import { Brand } from "@/components/brand";
 import { LogoutButton } from "@/components/logout-button";
@@ -8,31 +11,42 @@ import {
   MobileWorkspaceNav,
   SettingsLink,
 } from "@/components/workspace-nav";
-import { getAuthenticatedUser } from "@/lib/supabase/auth-context";
+import { getStoredUser, type GoogleAuthUser } from "@/lib/gas/client";
 
 export default function ProtectedLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  return (
-    <Suspense
-      fallback={
-        <div
-          role="status"
-          className="flex min-h-screen items-center justify-center px-4 text-base text-[#705c4d]"
-        >
-          กำลังตรวจสอบการเข้าสู่ระบบ…
-        </div>
-      }
-    >
-      <ProtectedWorkspace>{children}</ProtectedWorkspace>
-    </Suspense>
-  );
-}
+  const router = useRouter();
+  const [user, setUser] = useState<GoogleAuthUser | null>(null);
+  const [checked, setChecked] = useState(false);
 
-async function ProtectedWorkspace({ children }: { children: React.ReactNode }) {
-  await getAuthenticatedUser();
+  useEffect(() => {
+    const syncAuth = () => {
+      const current = getStoredUser();
+      if (!current) {
+        router.replace("/auth/login");
+      } else {
+        setUser(current);
+      }
+      setChecked(true);
+    };
+    syncAuth();
+    window.addEventListener("po-auth-changed", syncAuth);
+    return () => window.removeEventListener("po-auth-changed", syncAuth);
+  }, [router]);
+
+  if (!checked || !user) {
+    return (
+      <div
+        role="status"
+        className="flex min-h-screen items-center justify-center px-4 text-base text-[#705c4d]"
+      >
+        กำลังตรวจสอบการเข้าสู่ระบบด้วย Google…
+      </div>
+    );
+  }
 
   return (
     <div className="workspace-shell min-h-screen bg-transparent text-[#2f241e]">
@@ -51,8 +65,8 @@ async function ProtectedWorkspace({ children }: { children: React.ReactNode }) {
           <SettingsLink />
           <div className="rounded-2xl border border-[#e3d6ca] bg-white/55 p-3">
             <p className="text-xs font-bold text-[#604a3b]">Workspace</p>
-            <p className="mt-1 text-[11px] leading-5 text-[#9b8270]">
-              พื้นที่ส่วนตัวสำหรับงานและไอเดียของคุณ
+            <p className="mt-1 truncate text-[11px] leading-5 text-[#9b8270]">
+              {user.email}
             </p>
           </div>
           <div className="mt-3">
@@ -99,7 +113,7 @@ async function ProtectedWorkspace({ children }: { children: React.ReactNode }) {
           </form>
           <Link href="/protected/settings" className="workspace-account">
             <UserRound aria-hidden="true" />
-            <span>บัญชีของฉัน</span>
+            <span>{user.name || "บัญชีของฉัน"}</span>
           </Link>
         </div>
         {children}
