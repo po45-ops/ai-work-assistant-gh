@@ -69,6 +69,8 @@ const SHEETS_SCHEMA = {
   ]
 };
 
+const DEFAULT_SPREADSHEET_ID = "1x6ZIC-9yrrRWBCTj1LtHkQokvJvlaDIGZPMlOc1yfeQ";
+
 const DEFAULT_SETTINGS = {
   default_work_start: "18:00",
   default_work_end: "21:00",
@@ -79,6 +81,30 @@ const DEFAULT_SETTINGS = {
   allow_weekend: true,
   retention_completed_days: 30
 };
+
+/**
+ * 0. สร้างเมนูบนแถบเครื่องมือของ Google Sheet อัตโนมัติเมื่อเปิดไฟล์
+ */
+function onOpen() {
+  try {
+    SpreadsheetApp.getUi()
+      .createMenu("🤖 Po AI Assistant")
+      .addItem("1. เตรียมตาราง + ตั้งเวลา 18:00 น. (Initialize All)", "initializeAll")
+      .addItem("2. ตรวจสอบ/ซ่อมหัวตารางทั้ง 9 แท็บ (setupSheets)", "setupSheets")
+      .addItem("3. ตั้งเวลาส่งสรุปงาน LINE 18:00 น. (setupDailyDigestTrigger)", "setupDailyDigestTrigger")
+      .addItem("4. ทดสอบรันสรุปงานประจำวันทันที (runDailyLineDigest)", "runDailyLineDigest")
+      .addToUi();
+  } catch (_) {}
+}
+
+/**
+ * รันการตั้งค่าเริ่มต้นทั้งหมดในคลิกเดียว (สร้าง/ตรวจ 9 แท็บ + ตั้ง Time-driven Trigger 18:00 น.)
+ */
+function initializeAll() {
+  const sheetsResult = setupSheets();
+  const triggerResult = setupDailyDigestTrigger();
+  return { ok: true, sheets: sheetsResult, trigger: triggerResult };
+}
 
 /**
  * 1. สร้างแท็บตารางทั้งหมดและหัวคอลัมน์ใน Google Sheet อัตโนมัติ
@@ -1274,8 +1300,12 @@ function importTableRows_(email, payload) {
  * ========================================================================== */
 
 function getSpreadsheet_() {
-  const id = getProp_("SPREADSHEET_ID");
-  return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
+  const id = getProp_("SPREADSHEET_ID") || DEFAULT_SPREADSHEET_ID;
+  try {
+    return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActiveSpreadsheet();
+  } catch (_) {
+    return SpreadsheetApp.getActiveSpreadsheet();
+  }
 }
 
 function getProp_(key) {
