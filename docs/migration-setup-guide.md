@@ -6,7 +6,10 @@
 
 ## 1. การตั้งค่า Google Sheet และ Google Apps Script
 
-1. สร้างไฟล์ **Google Sheet** ใหม่ใน Google Drive ของคุณ (ตั้งชื่อเช่น `Po AI Work Assistant DB`)
+1. ไฟล์ **Google Sheet** ถูกสร้างและตั้งค่าครบทั้ง 9 แท็บให้เรียบร้อยแล้วที่:
+   - **ชื่อไฟล์**: `Po AI Work Assistant DB`
+   - **Spreadsheet ID**: `1x6ZIC-9yrrRWBCTj1LtHkQokvJvlaDIGZPMlOc1yfeQ`
+   - **ลิงก์เปิดไฟล์**: https://docs.google.com/spreadsheets/d/1x6ZIC-9yrrRWBCTj1LtHkQokvJvlaDIGZPMlOc1yfeQ/edit
 2. ที่เมนูด้านบนของ Google Sheet เลือก **Extensions (ส่วนขยาย) > Apps Script**
 3. ในหน้าต่าง Apps Script:
    - เปิดการตั้งค่าโปรเจกต์ (ไอคอนฟันเฟือง **Project Settings** ด้านซ้าย) แล้วติ๊กเปิด **"Show 'appsscript.json' manifest file in editor"**

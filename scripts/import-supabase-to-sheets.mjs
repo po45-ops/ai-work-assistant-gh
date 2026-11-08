@@ -267,6 +267,20 @@ async function main() {
   const bundlePath = path.join(outDir, "supabase-import-bundle.json");
   fs.writeFileSync(bundlePath, JSON.stringify(bundle, null, 2), "utf8");
   console.log(`✓ บันทึกไฟล์รวม JSON พร้อมนำเข้าที่: ${bundlePath}`);
+
+  const gsheetsBatch = Object.entries(bundle)
+    .filter(([, rows]) => rows.length > 0)
+    .map(([table, rows]) => {
+      const cols = SHEETS_SCHEMA[table];
+      return {
+        op: "append",
+        range: `${table}!A1`,
+        data: rows.map((row) => cols.map((col) => (row[col] === undefined || row[col] === null ? "" : String(row[col])))),
+      };
+    });
+  const gsheetsBatchPath = path.join(outDir, "gsheets-batch.json");
+  fs.writeFileSync(gsheetsBatchPath, JSON.stringify(gsheetsBatch, null, 2), "utf8");
+  console.log(`✓ บันทึกไฟล์ Batch สำหรับ gsheets CLI ที่: ${gsheetsBatchPath}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
