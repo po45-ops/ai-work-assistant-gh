@@ -18,12 +18,17 @@
  */
 
 const SHEETS_SCHEMA = {
+  accounts: [
+    "id", "user_email", "name", "password_hash", "salt",
+    "created_at", "updated_at", "reset_code_hash", "reset_expires", "reset_attempts"
+  ],
   tasks: [
     "id", "user_email", "created_at", "updated_at",
     "title", "description", "status", "priority", "due_date",
     "project_id", "milestone_id", "estimated_minutes",
     "completed_at", "archive_after", "archived_at",
-    "source_inbox_id", "calendar_event_id"
+    "source_inbox_id", "calendar_event_id",
+    "google_task_id", "google_task_list_id"
   ],
   projects: [
     "id", "user_email", "created_at", "updated_at",
@@ -189,6 +194,11 @@ function doPost(e) {
     const action = body.action || params.action || "";
     const idToken = body.idToken || params.idToken || "";
 
+    // เส้นทางสาธารณะสำหรับสมัคร/เข้าสู่ระบบด้วยอีเมลและรหัสผ่าน
+    if (action.indexOf("auth.") === 0 && action !== "auth.me") {
+      return jsonResponse_(handleAuthAction_(action, body.payload || {}));
+    }
+
     // ตรวจสอบ Google ID Token ก่อนเข้าถึงข้อมูลทุกครั้ง
     const user = verifyGoogleIdToken_(idToken);
     if (!user || !user.email) {
@@ -211,6 +221,8 @@ function doPost(e) {
         return jsonResponse_(changeTaskStatusData_(email, payload));
       case "tasks.delete":
         return jsonResponse_(deleteTaskData_(email, payload));
+      case "googleTasks.sync":
+        return jsonResponse_(syncGoogleTasksNow_(email));
       case "projects.list":
         return jsonResponse_({ ok: true, data: listProjectsData_(email, payload) });
       case "projects.detail":
@@ -272,6 +284,8 @@ function doPost(e) {
 
 function verifyGoogleIdToken_(idToken) {
   if (!idToken || typeof idToken !== "string") return null;
+  const own = verifyPoSessionToken_(idToken);
+  if (own) return own;
   const cache = CacheService.getScriptCache();
   const cacheKey = "gis_tok_" + Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, idToken)).slice(0, 32);
   const cached = cache.get(cacheKey);
@@ -289,13 +303,7 @@ function verifyGoogleIdToken_(idToken) {
   const expectedClientId = getProp_("GOOGLE_CLIENT_ID");
   if (expectedClientId && info.aud !== expectedClientId) return null;
 
-  const allowedEmailsRaw = getProp_("ALLOWED_USER_EMAILS");
-  if (allowedEmailsRaw) {
-    const allowed = allowedEmailsRaw.split(",").map(function (s) { return s.trim().toLowerCase(); }).filter(Boolean);
-    if (allowed.length > 0 && allowed.indexOf(String(info.email).toLowerCase()) === -1) {
-      return null;
-    }
-  }
+  if (!isEmailAllowed_(info.email)) return null;
 
   const user = {
     email: String(info.email).toLowerCase(),
@@ -312,6 +320,7 @@ function verifyGoogleIdToken_(idToken) {
  * ========================================================================== */
 
 function getDashboardData_(email) {
+  syncGoogleTasksThrottled_(email);
   const today = bangkokToday_();
   const tasks = readUserRows_("tasks", email).filter(function (t) { return !t.archived_at; });
   const projects = readUserRows_("projects", email);
@@ -355,6 +364,7 @@ function getDashboardData_(email) {
 }
 
 function listTasksData_(email, filters) {
+  syncGoogleTasksThrottled_(email);
   const today = bangkokToday_();
   const pageSize = 30;
   const search = String((filters && filters.search) || "").trim().toLowerCase();
@@ -475,6 +485,7 @@ function changeTaskStatusData_(email, payload) {
     updated_at: now
   });
   updateRowById_("tasks", email, id, updated);
+  pushGoogleTaskStatus_(existing, status);
   return {
     ok: true,
     message: status === "done" ? "ทำงานเสร็จแล้ว และยังเก็บประวัติไว้ตามนโยบายของบัญชี" : "นำงานกลับมาดำเนินการแล้ว"
@@ -485,6 +496,11 @@ function deleteTaskData_(email, payload) {
   const id = String(payload.id || "");
   const existing = findUserRow_("tasks", email, id);
   if (!existing) return { ok: false, message: "ไม่พบงานที่ต้องการลบ" };
+  if (existing.google_task_id) {
+    // งานที่ซิงค์จาก Google Tasks: ซ่อนในแอป (ไม่ลบจาก Google Tasks และไม่ให้ซิงค์กลับมาซ้ำ)
+    updateRowById_("tasks", email, id, Object.assign({}, existing, { archived_at: nowIso_(), updated_at: nowIso_() }));
+    return { ok: true, message: "ซ่อนงานแล้ว (งานใน Google Tasks ยังอยู่เหมือนเดิม)" };
+  }
   if (existing.calendar_event_id) {
     deleteCalendarEventQuietly_(email, existing.calendar_event_id);
   }
@@ -1652,4 +1668,361 @@ function jsonResponse_(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+
+/* ==========================================================================
+ * ซิงค์สองทางกับ Google Tasks (ต้องเปิดบริการ "Google Tasks API" ใน Apps Script)
+ * หมายเหตุ: Web App รันในนามเจ้าของสคริปต์ จึงซิงค์ได้เฉพาะ Google Tasks ของเจ้าของ
+ * ========================================================================== */
+
+function syncGoogleTasksThrottled_(email) {
+  try {
+    const cache = CacheService.getScriptCache();
+    const key = "gtasks_sync_" + String(email).toLowerCase();
+    if (cache.get(key)) return;
+    cache.put(key, "1", 60);
+    syncGoogleTasks_(email);
+  } catch (err) {
+    console.error("syncGoogleTasks failed: " + err);
+  }
+}
+
+function syncGoogleTasksNow_(email) {
+  try {
+    const r = syncGoogleTasks_(email);
+    return { ok: true, data: r, message: "ซิงค์ Google Tasks แล้ว" };
+  } catch (err) {
+    return { ok: false, message: "ซิงค์ Google Tasks ไม่สำเร็จ: " + err };
+  }
+}
+
+function syncGoogleTasks_(email) {
+  const owner = String(Session.getEffectiveUser().getEmail() || "").toLowerCase();
+  if (owner && owner !== String(email).toLowerCase()) return { skipped: true };
+  if (typeof Tasks === "undefined") throw new Error("ยังไม่ได้เปิดบริการ Google Tasks API");
+
+  // ให้แน่ใจว่ามีคอลัมน์ google_task_id
+  let info = getSheetWithHeaders_("tasks");
+  if (info.headers.indexOf("google_task_id") === -1) {
+    setupSheets();
+    info = getSheetWithHeaders_("tasks");
+  }
+
+  const seen = {};
+  const incoming = [];
+  const completedMin = new Date(Date.now() - 30 * 86400000).toISOString();
+  const lists = (Tasks.Tasklists.list({ maxResults: 100 }).items) || [];
+  lists.forEach(function (list) {
+    let pageToken = null;
+    do {
+      const res = Tasks.Tasks.list(list.id, {
+        maxResults: 100,
+        showCompleted: true,
+        showHidden: true,
+        completedMin: completedMin,
+        pageToken: pageToken || undefined
+      });
+      (res.items || []).forEach(function (t) {
+        if (!t.title && !t.notes) return;
+        seen[t.id] = true;
+        incoming.push({ list: list, task: t });
+      });
+      pageToken = res.nextPageToken || null;
+    } while (pageToken);
+  });
+
+  const existing = readUserRows_("tasks", email);
+  const byGid = {};
+  existing.forEach(function (r) { if (r.google_task_id) byGid[String(r.google_task_id)] = r; });
+
+  const now = nowIso_();
+  const settings = getUserSettings_(email);
+  const retentionDays = Number(settings.retention_completed_days || 30);
+  const toInsert = [];
+  let updated = 0;
+
+  incoming.forEach(function (it) {
+    const t = it.task;
+    const done = t.status === "completed";
+    const due = t.due ? String(t.due).slice(0, 10) : null;
+    const title = String(t.title || "(ไม่มีชื่อ)");
+    const desc = t.notes ? String(t.notes) : null;
+    const row = byGid[t.id];
+    if (!row) {
+      const completedAt = done ? (t.completed || now) : null;
+      toInsert.push({
+        id: "gt_" + t.id, user_email: email, created_at: now, updated_at: now,
+        title: title, description: desc, status: done ? "done" : "not_started",
+        priority: "medium", due_date: due, project_id: null, milestone_id: null,
+        estimated_minutes: null, completed_at: completedAt,
+        archive_after: done ? addDaysIso_(completedAt, retentionDays) : null,
+        archived_at: null, source_inbox_id: null, calendar_event_id: null,
+        google_task_id: t.id, google_task_list_id: it.list.id
+      });
+      return;
+    }
+    if (row.archived_at) return;
+    const rowDone = row.status === "done";
+    const rowDue = row.due_date ? formatDateCol_(row.due_date) : null;
+    if (String(row.title || "") === title && (row.description || null) === desc && rowDone === done && rowDue === due) return;
+    const completedAt = done ? (row.completed_at || t.completed || now) : null;
+    const next = Object.assign({}, row, {
+      title: title, description: desc, due_date: due,
+      status: done ? "done" : (rowDone ? "not_started" : row.status),
+      completed_at: completedAt,
+      archive_after: done ? (row.archive_after || addDaysIso_(completedAt, retentionDays)) : null,
+      updated_at: now
+    });
+    updateRowById_("tasks", email, row.id, next);
+    updated++;
+  });
+
+  if (toInsert.length) {
+    const headers = info.headers;
+    const values = toInsert.map(function (o) {
+      return headers.map(function (h) {
+        const v = o[h];
+        return v === null || v === undefined ? "" : v;
+      });
+    });
+    info.sheet.getRange(info.sheet.getLastRow() + 1, 1, values.length, headers.length).setValues(values);
+  }
+
+  // งานที่ถูกลบจาก Google Tasks แล้ว: ซ่อนในแอป
+  let hidden = 0;
+  existing.forEach(function (r) {
+    if (r.google_task_id && !r.archived_at && !seen[String(r.google_task_id)]) {
+      updateRowById_("tasks", email, r.id, Object.assign({}, r, { archived_at: now, updated_at: now }));
+      hidden++;
+    }
+  });
+
+  return { added: toInsert.length, updated: updated, hidden: hidden, lists: lists.length };
+}
+
+function pushGoogleTaskStatus_(row, status) {
+  if (!row || !row.google_task_id || !row.google_task_list_id) return;
+  try {
+    if (typeof Tasks === "undefined") return;
+    if (status === "done") {
+      Tasks.Tasks.patch({ status: "completed" }, String(row.google_task_list_id), String(row.google_task_id));
+    } else {
+      Tasks.Tasks.patch({ status: "needsAction", completed: null }, String(row.google_task_list_id), String(row.google_task_id));
+    }
+  } catch (err) {
+    console.error("pushGoogleTaskStatus failed: " + err);
+  }
+}
+
+/** รันครั้งเดียวเพื่ออนุญาตสิทธิ์ Google Tasks และทดสอบซิงค์ */
+function authorizeGoogleTasks() {
+  const email = Session.getEffectiveUser().getEmail();
+  const r = syncGoogleTasks_(email);
+  Logger.log(JSON.stringify(r));
+  return r;
+}
+
+
+/* ==========================================================================
+ * บัญชีผู้ใช้ด้วยอีเมล + รหัสผ่าน (เก็บแบบแฮชในแท็บ accounts) และ Session Token
+ * ========================================================================== */
+
+const DEFAULT_ALLOWED_EMAILS = ["nn.nattapon45@gmail.com"];
+const PO_SESSION_DAYS = 30;
+
+function getAllowedEmails_() {
+  const raw = getProp_("ALLOWED_USER_EMAILS");
+  const list = raw ? raw.split(",").map(function (x) { return x.trim().toLowerCase(); }).filter(Boolean) : [];
+  return list.length ? list : DEFAULT_ALLOWED_EMAILS;
+}
+
+function isEmailAllowed_(email) {
+  return getAllowedEmails_().indexOf(String(email || "").trim().toLowerCase()) !== -1;
+}
+
+function getSessionSecret_() {
+  let s = getProp_("SESSION_SECRET");
+  if (!s) {
+    s = Utilities.getUuid() + Utilities.getUuid() + Utilities.getUuid();
+    PropertiesService.getScriptProperties().setProperty("SESSION_SECRET", s);
+  }
+  return s;
+}
+
+function b64uStr_(str) {
+  return Utilities.base64EncodeWebSafe(str, Utilities.Charset.UTF_8).replace(/=+$/, "");
+}
+
+function b64uBytes_(bytes) {
+  return Utilities.base64EncodeWebSafe(bytes).replace(/=+$/, "");
+}
+
+function b64uDecodeStr_(s) {
+  const padded = s + "====".slice(0, (4 - (s.length % 4)) % 4);
+  return Utilities.newBlob(Utilities.base64DecodeWebSafe(padded)).getDataAsString("UTF-8");
+}
+
+function issuePoSessionToken_(email, name) {
+  const header = b64uStr_(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+  const payload = b64uStr_(JSON.stringify({
+    iss: "po-session",
+    email: email,
+    name: name || email,
+    exp: Math.floor(Date.now() / 1000) + PO_SESSION_DAYS * 86400
+  }));
+  const sig = b64uBytes_(Utilities.computeHmacSha256Signature(header + "." + payload, getSessionSecret_()));
+  return header + "." + payload + "." + sig;
+}
+
+function verifyPoSessionToken_(token) {
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length !== 3) return null;
+    const expected = b64uBytes_(Utilities.computeHmacSha256Signature(parts[0] + "." + parts[1], getSessionSecret_()));
+    if (expected !== parts[2]) return null;
+    const p = JSON.parse(b64uDecodeStr_(parts[1]));
+    if (p.iss !== "po-session" || !p.email) return null;
+    if (!p.exp || p.exp * 1000 < Date.now()) return null;
+    if (!isEmailAllowed_(p.email)) return null;
+    return { email: String(p.email).toLowerCase(), name: p.name || p.email, picture: "", sub: "po" };
+  } catch (_) {
+    return null;
+  }
+}
+
+function hexOfBytes_(bytes) {
+  return bytes.map(function (b) { return ("0" + ((b + 256) % 256).toString(16)).slice(-2); }).join("");
+}
+
+function hashPassword_(password, salt) {
+  let h = salt + ":" + password;
+  for (let i = 0; i < 2000; i++) {
+    h = hexOfBytes_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, h + salt, Utilities.Charset.UTF_8));
+  }
+  return h;
+}
+
+function authFail_(email, kind) {
+  const cache = CacheService.getScriptCache();
+  const key = "po_fail_" + kind + "_" + email;
+  const n = Number(cache.get(key) || 0) + 1;
+  cache.put(key, String(n), 900);
+}
+
+function authLocked_(email, kind) {
+  return Number(CacheService.getScriptCache().get("po_fail_" + kind + "_" + email) || 0) >= 5;
+}
+
+function authSuccessResponse_(email, name) {
+  return {
+    ok: true,
+    data: { idToken: issuePoSessionToken_(email, name), user: { email: email, name: name || email } }
+  };
+}
+
+function handleAuthAction_(action, payload) {
+  const email = String(payload.email || "").trim().toLowerCase();
+  const password = String(payload.password || "");
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return { ok: false, message: "กรุณากรอกอีเมลให้ถูกต้อง" };
+  }
+
+  if (action === "auth.register") {
+    if (password.length < 8) return { ok: false, message: "รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร" };
+    if (!isEmailAllowed_(email)) return { ok: false, message: "อีเมลนี้ยังไม่ได้รับอนุญาตให้สมัคร กรุณาติดต่อเจ้าของระบบ" };
+    if (readUserRows_("accounts", email)[0]) return { ok: false, message: "อีเมลนี้มีบัญชีอยู่แล้ว ลองเข้าสู่ระบบหรือกด \"ลืมรหัสผ่าน\"" };
+    const cache = CacheService.getScriptCache();
+    const code = String(payload.code || "").trim();
+    const regKey = "po_reg_" + email;
+    if (!code) {
+      // ขั้นที่ 1: ส่งรหัสยืนยันอีเมล เพื่อกันคนอื่นสมัครแทนด้วยอีเมลของเจ้าของ
+      if (authLocked_(email, "regsend")) return { ok: false, message: "ขอรหัสบ่อยเกินไป กรุณารอ 15 นาทีแล้วลองใหม่" };
+      authFail_(email, "regsend");
+      const c = ("000000" + Math.floor(Math.random() * 1000000)).slice(-6);
+      cache.put(regKey, hashPassword_(c, email), 900);
+      MailApp.sendEmail({
+        to: email,
+        subject: "รหัสยืนยันอีเมล - Po AI Work Assistant",
+        body: "รหัสยืนยันการสมัครของคุณคือ " + c + "\nรหัสนี้หมดอายุใน 15 นาที หากไม่ได้เป็นผู้ขอ ให้ละเว้นอีเมลนี้"
+      });
+      return { ok: true, data: { needCode: true }, message: "ส่งรหัสยืนยัน 6 หลักไปที่อีเมลแล้ว" };
+    }
+    // ขั้นที่ 2: ตรวจรหัส แล้วสร้างบัญชี
+    if (authLocked_(email, "regcode")) return { ok: false, message: "ใส่รหัสผิดหลายครั้ง กรุณาขอรหัสใหม่ภายหลัง" };
+    const expected = cache.get(regKey);
+    if (!expected || hashPassword_(code, email) !== expected) {
+      authFail_(email, "regcode");
+      return { ok: false, message: "รหัสไม่ถูกต้องหรือหมดอายุ" };
+    }
+    const lock = LockService.getScriptLock();
+    lock.waitLock(20000);
+    try {
+      if (readUserRows_("accounts", email)[0]) return { ok: false, message: "อีเมลนี้มีบัญชีอยู่แล้ว" };
+      const now = nowIso_();
+      const salt = Utilities.getUuid();
+      const name = String(payload.name || "").trim() || email.split("@")[0];
+      insertRow_("accounts", {
+        id: Utilities.getUuid(), user_email: email, name: name,
+        password_hash: hashPassword_(password, salt), salt: salt,
+        created_at: now, updated_at: now,
+        reset_code_hash: null, reset_expires: null, reset_attempts: 0
+      });
+      cache.remove(regKey);
+      return authSuccessResponse_(email, name);
+    } finally {
+      lock.releaseLock();
+    }
+  }
+
+  if (action === "auth.login") {
+    if (authLocked_(email, "login")) return { ok: false, message: "ลองผิดหลายครั้งเกินไป กรุณารอ 15 นาทีแล้วลองใหม่" };
+    const acc = readUserRows_("accounts", email)[0];
+    if (!acc || !isEmailAllowed_(email) || hashPassword_(password, String(acc.salt)) !== String(acc.password_hash)) {
+      authFail_(email, "login");
+      return { ok: false, message: "อีเมลหรือรหัสผ่านไม่ถูกต้อง ลองตรวจสอบอีกครั้งนะ" };
+    }
+    return authSuccessResponse_(email, acc.name);
+  }
+
+  if (action === "auth.forgot") {
+    const generic = { ok: true, message: "หากอีเมลนี้มีบัญชีอยู่ ระบบได้ส่งรหัส 6 หลักไปให้แล้ว (หมดอายุใน 15 นาที)" };
+    if (authLocked_(email, "forgot")) return generic;
+    authFail_(email, "forgot");
+    const acc = readUserRows_("accounts", email)[0];
+    if (!acc || !isEmailAllowed_(email)) return generic;
+    const code = ("000000" + Math.floor(Math.random() * 1000000)).slice(-6);
+    updateRowById_("accounts", email, acc.id, Object.assign({}, acc, {
+      reset_code_hash: hashPassword_(code, String(acc.salt)),
+      reset_expires: new Date(Date.now() + 15 * 60000).toISOString(),
+      reset_attempts: 0, updated_at: nowIso_()
+    }));
+    MailApp.sendEmail({
+      to: email,
+      subject: "รหัสตั้งรหัสผ่านใหม่ - Po AI Work Assistant",
+      body: "รหัสสำหรับตั้งรหัสผ่านใหม่ของคุณคือ " + code + "\nรหัสนี้หมดอายุใน 15 นาที หากไม่ได้เป็นผู้ขอ ให้ละเว้นอีเมลนี้"
+    });
+    return generic;
+  }
+
+  if (action === "auth.reset") {
+    const code = String(payload.code || "").trim();
+    if (password.length < 8) return { ok: false, message: "รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร" };
+    const acc = readUserRows_("accounts", email)[0];
+    const bad = { ok: false, message: "รหัสไม่ถูกต้องหรือหมดอายุ กรุณาขอรหัสใหม่" };
+    if (!acc || !acc.reset_code_hash || !acc.reset_expires) return bad;
+    if (new Date(acc.reset_expires).getTime() < Date.now() || Number(acc.reset_attempts || 0) >= 5) return bad;
+    if (hashPassword_(code, String(acc.salt)) !== String(acc.reset_code_hash)) {
+      updateRowById_("accounts", email, acc.id, Object.assign({}, acc, { reset_attempts: Number(acc.reset_attempts || 0) + 1 }));
+      return bad;
+    }
+    const salt = Utilities.getUuid();
+    updateRowById_("accounts", email, acc.id, Object.assign({}, acc, {
+      salt: salt, password_hash: hashPassword_(password, salt),
+      reset_code_hash: null, reset_expires: null, reset_attempts: 0, updated_at: nowIso_()
+    }));
+    return authSuccessResponse_(email, acc.name);
+  }
+
+  return { ok: false, message: "ไม่รู้จักคำสั่ง: " + action };
 }
