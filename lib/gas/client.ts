@@ -168,3 +168,24 @@ export async function callGasApi<T = unknown>(
   }
   return result;
 }
+
+export async function callGasPublic<T = unknown>(
+  action: string,
+  payload: Record<string, unknown> = {},
+): Promise<{ ok: boolean; data?: T; message?: string }> {
+  const webAppUrl = getGasWebAppUrl();
+  if (!webAppUrl) {
+    return { ok: false, message: "ยังไม่ได้ตั้งค่า URL ของระบบหลังบ้าน (NEXT_PUBLIC_GAS_WEBAPP_URL)" };
+  }
+  try {
+    const response = await fetch(webAppUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action, payload }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return (await response.json()) as { ok: boolean; data?: T; message?: string };
+  } catch {
+    return { ok: false, message: "เชื่อมต่อระบบหลังบ้านไม่สำเร็จ กรุณาลองอีกครั้ง" };
+  }
+}
